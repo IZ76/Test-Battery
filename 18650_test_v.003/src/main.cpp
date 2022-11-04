@@ -1,7 +1,7 @@
 #pragma region include & defs
 #include <Arduino.h>
 #include "FS.h"
-#include <EEPROM.h> // Тут будемо зберігати налаштування WiFi
+#include <ArduinoJson.h>
 #include <SPI.h>
 #include <TFT_eSPI.h>
 #include <WiFi.h>
@@ -13,6 +13,8 @@
 #define DEVICE_NAME "Test Battery v.003"
 #define AUTHOR_NAME "IvanZah (github - IZ76)"
 #define ARRAY_SIZE(x) (sizeof(x)/sizeof(x[0]))
+#define MAX(x,y) ( x>y?x:y )
+#define MIN(x,y) ( x<y?x:y )
 #define IWIDTH  240 // Розмір зображення спрайту для тексту, що прокручується, для цього потрібно ~14 Кбайт оперативної пам’яті
 #define IHEIGHT 30
 #define CALIBRATION_FILE "/calibrationData2"
@@ -50,28 +52,23 @@
 #pragma endregion include & defs
 
 #pragma region SETTINGS
-float vol_start[4]          = {0.39, 0.39,  0.39,  0.39}; // мінімальне значення яке бачить порт ЕСП
-float vol_opor[4]           = {10.5, 10.39, 10.32, 10.427};  // Калібровка зарядженного аккумулятора
-float rezist[4]             = {3.73, 3.62,  3.66,  3.6}; // Калібровка току при розрядці
-float vol_min[4]            = {2.5,  2.5,   2.5,   2.5};
-float vol_max[4]            = {4.2,  4.2,   4.2,   4.2};
-const uint8_t pin_rele[4] = {25, 26, 27, 14}; // порти керування нагрузкою
-const uint8_t pin_ADC0 = 34; // порти для вимірювання параметрів аккумулятору
-const uint8_t pin_ADC1 = 35;
-const uint8_t pin_ADC2 = 32;
-const uint8_t pin_ADC3 = 33;
-struct SETTINGS{
-    uint16_t myName; // маркер тожсамощі даних WiFi
-    char ssid[16];
-    char password[64];
-    uint8_t chanView[4];
-};
-SETTINGS settings={
-    myName  : 1,
-    ssid    : { 's', 't', '-', '5', '0', '9', 0}, // лучше метода не знаю ((    
-    password: { 's', 't', '6', '4', '1', '0', 's', 't', 0},
-    chanView: { 0, 0, 0, 0 }
-};
+struct {
+  String ssid={"IvanZah"};
+  String pass={"11223344"};
+  float vol_start[4]          = {0.39, 0.39,  0.39,  0.39}; // мінімальне значення яке бачить порт ЕСП
+  float vol_opor[4]           = {10.5, 10.39, 10.32, 10.427};  // Калібровка зарядженного аккумулятора
+  float rezist[4]             = {3.73, 3.62,  3.66,  3.6}; // Калібровка току при розрядці
+  float vol_min[4]            = {2.5,  2.5,   2.5,   2.5};
+  float vol_max[4]            = {4.2,  4.2,   4.2,   4.2};
+  uint8_t pin_rele[4] = {25, 26, 27, 14}; // порти керування нагрузкою
+  uint8_t pin_ADC0 = 34; // порти для вимірювання параметрів аккумулятору
+  uint8_t pin_ADC1 = 35;
+  uint8_t pin_ADC2 = 32;
+  uint8_t pin_ADC3 = 33;
+} set_fs;
+
+
+
 #pragma endregion SETTINGS
 
 #pragma region working variables
@@ -79,8 +76,11 @@ TFT_eSPI    tft = TFT_eSPI();
 TFT_eSprite img = TFT_eSprite(&tft);
 uint8_t text_y = 0;
 uint8_t text_step = 24;
-String str_var = "";
+uint8_t update_ffs = 0;               // маркер необхідності оновленя налаштувань в SPIFFS
+String str_var = "";                  // для проміжних результатів
 const String myFileExt = ".txt";      // розширення файлу
+String logString="";                  // змінна для береження логу перез записом
+const uint16_t LOG_STRING_MAX_SIZE = 1024; // буфер змінної логу
 String lastOnlyDigitsFileName = "00"; // останнє ім'я що використовувалось
 String currentFileName="";            // поточне ім'я файлу
 const uint8_t  FILENAME_DIGITS = 2;   // кількість знаків в імені файлу
@@ -108,6 +108,7 @@ uint8_t numberIndex = 0;
 // тестування
 char keyLabel_test[13][6] = {"TEST", "TEST", "TEST", "TEST", "PAUSE", "PAUSE", "PAUSE", "PAUSE", "RESET", "RESET", "RESET", "RESET","SETUP"};
 char end_test[4] = {"END"};
+
 char graph_test[6] = {"GRAPH"};
 uint16_t keyColor_test[13] = {TFT_DARKGREY, TFT_DARKGREY, TFT_DARKGREY, TFT_DARKGREY,
                               TFT_DARKGREY, TFT_DARKGREY, TFT_DARKGREY, TFT_DARKGREY,
@@ -116,6 +117,8 @@ uint16_t keyColor_test[13] = {TFT_DARKGREY, TFT_DARKGREY, TFT_DARKGREY, TFT_DARK
 TFT_eSPI_Button key_test[13];
 // налаштування
 char keyLabel_set[14][6] = {"+", "+", "+", "+", "-", "-", "-", "-", "SET", "SET", "SET", "SET","BACK","NEXT"};
+char esc_set[7] = {"Cancel"};
+char save_set[5] = {"SAVE"};
 uint16_t keyColor_set[14] = {TFT_DARKGREY, TFT_DARKGREY, TFT_DARKGREY, TFT_DARKGREY,
                               TFT_DARKGREY, TFT_DARKGREY, TFT_DARKGREY, TFT_DARKGREY,
                               TFT_DARKGREY, TFT_DARKGREY, TFT_DARKGREY, TFT_DARKGREY,
@@ -136,7 +139,7 @@ int16_t  adcAccumIndex = 0;
 int16_t  adcData[1000 / frameLength_mS][4] = {0};     // ц усреднення накопичених adcAccum[]
 int16_t  adcDataIndex = 0;
 int16_t  adcDataSafe[1000 / frameLength_mS][4] = {0}; // в loop() копіюємо сюди adcData для неспішної обробки у основному потоці
-uint16_t LOG_ACCUM_COUNTER = 10;  // т.я. adcDataSafe готовий раз на секунду, це фактично каже скільки секунд спостереження
+uint16_t LOG_ACCUM_COUNTER = 5;   // т.я. adcDataSafe готовий раз на секунду, це фактично каже скільки секунд спостереження
                                   // буде відповідати одному запису в логі
 float logAccum[4]          = {0}; // сюди сумуємо adcData LOG_ACCUM_COUNTER раз, усреднюємо та пишемо в лог
 uint16_t logAccumCounter   =  0;
@@ -147,6 +150,17 @@ volatile SemaphoreHandle_t semSampleNext;  // по тику таймера за�
 volatile SemaphoreHandle_t semSamplesReady;// по наполнению данными adcIN запускаем loop()
 portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
 #pragma endregion working variables
+
+#pragma region common
+
+String serialString="";   // для чтения команд
+String commad="view", arg="/"; // заполняется расшифровкой команды от управлятора ( веб морды )
+const String resultOf ="resultOf_"; // префикс отправляемых данных
+uint32_t saveSettings =-1;          // флаг сообщающий о необходимости сохранения EEPROM
+#pragma endregion common
+
+
+
 
 #pragma region timer task
 // сигналізує по таймеру що час читати ADC
@@ -203,78 +217,259 @@ void IRAM_ATTR tskReadADC(void *pvParameters){
 
 
 #pragma region spiffs
-void spiffsNewestFileName( String &nm ){
-    nm="";
-    File d = SPIFFS.open( "/log/", FILE_READ );
-    if( !d ) return;
-    d.rewindDirectory();
-    File e;
-    while( e=d.openNextFile() ){
-        String entry=e.name();
-        if( entry.endsWith(myFileExt) ){
-            if( entry > nm ) nm=entry; // ищем файл с самым большим именем
-        }
-        e.close();
+void spiffsNewestFileName(String &nm){ // поветаємо у вхідну змінну найбільше ім'я файлу
+  nm = "";
+  File d = SPIFFS.open("/log/", FILE_READ); // відчиняємо директорію /log/
+  if(!d) return;                            // якщо не існує то виходимо
+  d.rewindDirectory();                      // ідемо до першого файлу в директорії
+  File e;
+  while(e = d.openNextFile()){
+    String entry = e.name();
+    if(entry.endsWith(myFileExt)){          // шукуємо файли з кінцівкою .txt 
+      if(entry > nm) nm = entry;            // вертаємо файл з більшою назвою
     }
-    d.close();
+    e.close();
+  }
+  d.close();
 }
-void spiffsDir( String &result, String root="/log/" ){
+void spiffsDir(String &result, String root="/"){ // Функція шукає в дирикторії ім'я файлу з найбільшої цифрою та оновлюе значення lastOnlyDigitsFileName
+                                                 // а також у вхідну змінну повертає перелік файлій з їх довжинами
   result = "";
-  File d = SPIFFS.open(root, FILE_READ);
+  File d = SPIFFS.open(root, FILE_READ);                         // open() - перший аргумент є символьний або рядковий покажчик на шлях до файлу, а другий режим відкриття,
   if(!d){
     Serial.printf("spifsDir(): Error opening [%s]", root.c_str() );
     return;
   } 
-  d.rewindDirectory();
+  d.rewindDirectory();                                           // rewindDirectory() – повертає до першого файлу в директорії
   File e;
-  while(e=d.openNextFile()){
-    String entry=e.name();
-    if(e.isDirectory()){
+  while(e = d.openNextFile()){                                   // openNextFile() - повертає покажчик на наступний файл в кореню, інакше NULL
+    String entry = e.name();                                     // name() - повертає ім'я файлу
+    Serial.println("FILES: " + entry);
+    if(e.isDirectory()){                                         // isDirectory() - повертає істину, якщо відкритий об'єкт є папкою
       entry += " <DIR>";
     } else {
-      if(entry.length() < 8){// 4248.txt
+      if(entry.length() < 8){// 4248.txt                         // lenght() - gовертає кількість лічених символів (довжина строчки)
         String s = entry;
-        s.replace(myFileExt, "");
+        s.replace(myFileExt, "");                                // replace() - шукає текст та замінює його
         s.replace("/log/", "");
-        int i = s.toInt();
-        if(lastOnlyDigitsFileName.toInt() < i ){
-          lastOnlyDigitsFileName = String(i);
-          while(lastOnlyDigitsFileName.length() < FILENAME_DIGITS) lastOnlyDigitsFileName = "0" + lastOnlyDigitsFileName;
+        int i = s.toInt();  // дістаємо з імені файлу тільки цифри
+        if(lastOnlyDigitsFileName.toInt() < i ){ // якщо останнє ім'я що використовувалось меньше ніж ім'я файлу
+          lastOnlyDigitsFileName = String(i); // оновлюємо останнє ім'я файлу
+          while(lastOnlyDigitsFileName.length() < FILENAME_DIGITS) lastOnlyDigitsFileName = "0" + lastOnlyDigitsFileName; // якщо в іменя файлу меньше знаків чим FILENAME_DIGITS
         }
       }
       entry += " " + String(e.size());
     }
-    result += (result.length() ? "\n" :"" ) + entry;
+    result += (result.length() ? "\n" :"" ) + entry; // додає в резултат імя файлу та його довжини, якщо це дирикторія то до ім'я додає  <DIR>
+
     e.close();
   }
   d.close();       
 }
-bool isSpiffsFileNameVaid(String &fn, bool createNewName=false){
+bool isSpiffsFileNameVaid(String &fn, bool createNewName = false){
   if(fn.length() > 0 && SPIFFS.exists(fn)){
     File f = SPIFFS.open(fn);
     if(f.size() > MAX_LOG_SIZE || createNewName){
       fn.remove(0);
     }
   }
-  return (fn.length()>0);
+  return (fn.length() > 0);
 }
 
-String spiffsFileName( bool createNewName=false ){
-    if( currentFileName == ""  ) {
-        spiffsNewestFileName( currentFileName );
-        Serial.printf( "spiffsNewestFileName()=%s\n", currentFileName.c_str() );
+String spiffsFileName(bool createNewName = false){
+    if(currentFileName == "") { // при старті - поточне ім'я - порожньє
+        spiffsNewestFileName(currentFileName); // в поточне ім'я додаемо максимальне ім'я файлу з директорії "\log\"
+        Serial.printf("spiffsNewestFileName()=%s\n", currentFileName.c_str() );
     }
-    if( isSpiffsFileNameVaid( currentFileName, createNewName ) ) return currentFileName;
+    if(isSpiffsFileNameVaid(currentFileName, createNewName)) return currentFileName;
     do{
         //Serial.printf("lastOnlyDigitsFileName =%s\n", lastOnlyDigitsFileName.c_str())        ;
-        lastOnlyDigitsFileName = String( lastOnlyDigitsFileName.toInt()+1 );
-        while( lastOnlyDigitsFileName.length() < FILENAME_DIGITS ) lastOnlyDigitsFileName="0"+lastOnlyDigitsFileName;
-        currentFileName = "/log/" + lastOnlyDigitsFileName + myFileExt;
-    }while( !isSpiffsFileNameVaid(currentFileName, createNewName) );
+        lastOnlyDigitsFileName = String(lastOnlyDigitsFileName.toInt() + 1);
+        while(lastOnlyDigitsFileName.length() < FILENAME_DIGITS ) lastOnlyDigitsFileName = "0" + lastOnlyDigitsFileName;
+        currentFileName = "/log/" + lastOnlyDigitsFileName + myFileExt; // формуємо повний шлях, ім'я та розширення поточного файлу
+    }while(!isSpiffsFileNameVaid(currentFileName, createNewName));
     Serial.println("currentFileName="+currentFileName);
     return currentFileName;
 }
 #pragma endregion spiffs
+
+#pragma region servers
+void doCmd(String &command, String &arg){
+    if(command == "dir"){
+        spiffsDir(str_var);
+        str_var = resultOf + "dir\n" + String(SPIFFS.totalBytes()) + "," + String(SPIFFS.usedBytes()) + "\n" + str_var + "\n\n";
+        Serial.println("dir:s = " + str_var);
+        //socket.broadcastTXT( s );
+    }else if(command == "drop"){
+        if(SPIFFS.exists(arg)) SPIFFS.remove(arg);
+        command = "dir";
+        arg = "";
+        doCmd(commad, arg);
+    }else if(command == "view"){
+        if(SPIFFS.exists(arg)){
+            File f = SPIFFS.open(arg);
+            str_var = resultOf + "view\n";
+            str_var += arg + "\n";
+            while(f.available()){
+                String thisS = f.readString();
+                if(str_var.length() + thisS.length() > 0xffff) break;
+                str_var += thisS;
+            }
+            f.close();
+            Serial.println("view:s = " + str_var);
+            //socket.broadcastTXT( s );
+            str_var.remove(0);
+        }
+    }else if(command == "zap"){
+        File d = SPIFFS.open("/", FILE_READ);
+        if(!d){
+            Serial.println("spifsDir(): Error opening [/]");
+            return;
+        } 
+        d.rewindDirectory();
+        File e;
+        while(e = d.openNextFile()){
+            String entry = e.name();
+            if(e.isDirectory()){
+                e.close();
+            }else{
+                e.close();
+                SPIFFS.remove(entry);
+            }
+        }
+        d.close();       
+        lastOnlyDigitsFileName = "00";
+        currentFileName = "";
+        spiffsFileName(true);
+        command = "dir";
+        arg = "";
+        doCmd(commad, arg);
+    /*}else if(command == "cal"){
+        String calStr = resultOf + "cal\n";
+        for(uint8_t chan=0; chan<ARRAY_SIZE(calTable); chan++){
+            for( uint8_t row=0; row<ARRAY_SIZE(calTable[chan]); row++){
+                char ch[64];
+                sprintf( ch, "%08x%03x\n", (uint32_t)(calTable[chan][row].volt*1000), calTable[chan][row].adc );
+                calStr+=String( ch );
+            }
+        }
+        socket.broadcastTXT( calStr );
+    }else if( command == "cvg" ){ // chanView get
+        char ch[16];
+        sprintf( ch, "%02x\n%02x\n%02x\n%02x", settings.chanView[0], settings.chanView[1], settings.chanView[2], settings.chanView[3] );
+        socket.broadcastTXT( resultOf+"cvg\n"+String(ch) );
+    }else if( command == "cvs" ){ // chanView set
+        if( arg.length() == 8 ){
+            settings.chanView[0] = std::strtoul( arg.substring(0,2).c_str(), nullptr, 16 );
+            settings.chanView[1] = std::strtoul( arg.substring(2,4).c_str(), nullptr, 16 );
+            settings.chanView[2] = std::strtoul( arg.substring(4,6).c_str(), nullptr, 16 );
+            settings.chanView[3] = std::strtoul( arg.substring(6).c_str(), nullptr, 16 );
+            saveSettings = secondsCounter+10;
+        }*/
+    }
+    command=arg="";
+}
+/*
+void hexdump(const void *mem, uint32_t len, uint8_t cols = 16) {
+    const uint8_t* src = (const uint8_t*) mem;
+    Serial.printf("\n[HEXDUMP] Address: 0x%08X len: 0x%X (%d)", (ptrdiff_t)src, len, len);
+    for(uint32_t i = 0; i < len; i++) {
+        if(i % cols == 0) {
+            Serial.printf("\n[0x%08X] 0x%08X: ", (ptrdiff_t)src, i);
+        }
+        Serial.printf("%02X ", *src);
+        src++;
+    }
+    Serial.printf("\n");
+}
+void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {
+    switch(type) {
+        case WStype_DISCONNECTED:
+            Serial.printf("[%u] Disconnected!\n", num);
+            if( socket.connectedClients()==0 ){
+            
+            }
+        break;
+        case WStype_CONNECTED:{
+            IPAddress ip = socket.remoteIP(num);
+            Serial.printf("[%u] Connected from %d.%d.%d.%d url: %s\n", num, ip[0], ip[1], ip[2], ip[3], payload);
+            commad="cal"; arg=""; 
+            doCmd( commad, arg );
+            commad="cvg"; arg=""; 
+            doCmd( commad, arg );
+        }
+        break;
+        case WStype_TEXT:
+            serialString=(char *)payload;
+            socket.sendTXT( num, "raw: [" + serialString +"]" );// эхо
+            if( serialString.charAt(serialString.length()-1) == 0xA ){
+                serialString.remove(serialString.length()-1);
+                // correct
+                arg="";
+                int p=serialString.indexOf('|');
+                if( p>0 ){
+                    commad=serialString.substring(0, p);
+                    arg=serialString.substring( p+1 );
+                }else{
+                    commad=serialString;
+                }
+                socket.sendTXT( num, "commad=["+commad+"], arg=["+arg+"]" );
+                doCmd( commad, arg );
+            }
+            break;
+        case WStype_BIN:
+            Serial.printf("[%u] get binary length: %u\n", num, length);
+            hexdump(payload, length);
+        break;
+        case WStype_ERROR:
+        case WStype_FRAGMENT_TEXT_START:
+        case WStype_FRAGMENT_BIN_START:
+        case WStype_FRAGMENT:
+        case WStype_FRAGMENT_FIN:
+        default:
+        break;
+    }
+}
+void handleRoot() {
+    server.send_P(200, TEXT_HTML, index_html);
+}
+void handleFindKosBor() {
+    Serial.println( "handleFindKosBor()" );
+    server.send(200, TEXT_PLAIN, String(VERSION)+" ["+WiFi.macAddress()+"] "+DEVICE_NAME );
+}
+void handleIndexJs() {
+    server.send_P(200, TEXT_JS, index_js);
+}
+void handleNotFound() {
+    // финт ушами, отправляем файлы с неизвестными именами
+    if( server.uri().endsWith(".txt") && SPIFFS.exists(server.uri()) ){
+        File f=SPIFFS.open(server.uri());
+        size_t fSize=f.size();
+        server.sendHeader("Expires", "Mon,1 1985 00:00:01 GMT");
+        server.sendHeader("Cache-control", " no-cache; must-revalidate");
+        server.sendHeader("Pragma","no-cache");
+        server.sendHeader("Content-Type","application/zip");
+        server.sendHeader("Content-Length", String(fSize) );
+        server.streamFile( f, "application/zip" );
+        f.close();
+        return;
+    }
+    // тут настоящая 404
+    String message = "File Not Found\n\n";
+    message += "URI: ";
+    message += server.uri();
+    message += "\nMethod: ";
+    message += (server.method() == HTTP_GET) ? "GET" : "POST";
+    message += "\nArguments: ";
+    message += server.args();
+    message += "\n";
+    for (uint8_t i = 0; i < server.args(); i++) {
+        message += " " + server.argName(i) + ": " + server.arg(i) + "\n";
+    }
+    server.send(404, TEXT_PLAIN, message);
+}
+*/
+#pragma endregion servers
 
 
 void touch_calibrate(){
@@ -441,13 +636,13 @@ void draw_klaw_set(){
                                KEY_YG,
                                KEY_WB, KEY_DG, TFT_WHITE,
                                keyColor_set[12], TFT_GREENYELLOW,
-                               keyLabel_set[12], KEY_TEXTSIZE);
+                               setup_num ? keyLabel_set[12] :  esc_set, KEY_TEXTSIZE);
   key_set[12].drawButton();
   key_set[13].initButton(&tft, KEY_XB + 358,
                                KEY_YG,
                                KEY_WB, KEY_DG, TFT_WHITE,
                                keyColor_set[13], TFT_GREENYELLOW,
-                               keyLabel_set[13], KEY_TEXTSIZE);
+                               setup_num != 4 ? keyLabel_set[13] : update_ffs ? save_set : end_test, KEY_TEXTSIZE);
   key_set[13].drawButton();
 }
 void first_start(){
@@ -457,6 +652,67 @@ void first_start(){
   tft.setTextColor(TFT_GOLD ,TFT_BLACK);
   tft.setTextDatum(TC_DATUM);
   tft.drawString("IZ76 " + String(DEVICE_NAME), 180, 20);
+}
+
+
+
+//=================================================================
+void saveSpiffs(){
+  String json_str="{}";
+  DynamicJsonDocument doc(1024);
+  deserializeJson(doc, json_str);
+  doc["pin_ADC0"] = set_fs.pin_ADC0;
+  doc["pin_ADC1"] = set_fs.pin_ADC1;
+  doc["pin_ADC2"] = set_fs.pin_ADC2;
+  doc["pin_ADC3"] = set_fs.pin_ADC3;
+  JsonArray arr = doc.createNestedArray("arr");
+  for(uint8_t i = 0; i < 4; i++){
+    arr.add(set_fs.vol_start[i]);
+    arr.add(set_fs.vol_opor[i]);
+    arr.add(set_fs.rezist[i]);
+    arr.add(set_fs.vol_min[i]);
+    arr.add(set_fs.vol_max[i]);
+    arr.add(set_fs.pin_rele[i]);
+  }
+  json_str="";
+  serializeJson(doc, json_str);
+  File a = SPIFFS.open("/settings.json", FILE_WRITE);
+  if(!a || serializeJson(doc, a) == 0){
+    Serial.println(F("Failed to write to vz/settings.json"));
+    a.close();
+    return;
+  }
+  a.close();
+  Serial.println("SAVE /settings.json="+json_str);
+}
+//---------------------------------------------------------------------------
+void loadSpiffs(){
+  String json_str="{}";
+  File a = SPIFFS.open("/settings.json", FILE_READ);
+  if(!a){
+    a.close();
+    saveSpiffs();
+    return;
+  }
+  size_t size = a.size();
+  if(size>1024) Serial.println("AHTUNG!!! /settings.json - size>1024");
+  json_str = a.readString();
+  DynamicJsonDocument doc(1024);
+  deserializeJson(doc, json_str);
+  a.close();
+  set_fs.pin_ADC0 = doc["pin_ADC0"];
+  set_fs.pin_ADC1 = doc["pin_ADC1"];
+  set_fs.pin_ADC2 = doc["pin_ADC2"];
+  set_fs.pin_ADC3 = doc["pin_ADC3"];
+  for(uint8_t i = 0; i < 4; i++){
+    set_fs.vol_start[i] = doc["arr"][i*6];
+    set_fs.vol_opor[i] = doc["arr"][i*6+1];
+    set_fs.rezist[i] = doc["arr"][i*6+2];
+    set_fs.vol_min[i] = doc["arr"][i*6+3];
+    set_fs.vol_max[i] = doc["arr"][i*6+4];
+    set_fs.pin_rele[i] = doc["arr"][i*6+5];
+  }
+  Serial.println("LOAD /settings.json("+String(size)+"): "+json_str);
 }
 
 // -------------------------------------------------------------------------
@@ -479,39 +735,12 @@ void setup_TFT(){
   text_y += text_step;
 }
 void setup_PIN(){
-  for(uint8_t i=0; i<4; i++){
-    pinMode(pin_rele[i], OUTPUT);
-    digitalWrite(pin_rele[i], LOW);
+  for(uint8_t i = 0; i < 4; i++){
+    pinMode(set_fs.pin_rele[i], OUTPUT);
+    digitalWrite(set_fs.pin_rele[i], LOW);
   }
 }
-void setup_EEPROM(){
-  if(!EEPROM.begin(256)){ // ініціалізуємо ЕЕПРОМ 256 байт
-    Serial.println("failed to initialize EEPROM"); // невдача з ЕЕПРОМ
-    tft.drawString("failed to initialize EEPROM", 0, text_y);
-    text_y += text_step;
-    delay(1000000);
-    return;
-  } else {
-    tft.drawString("EEPROM(256) - OK", 0, text_y);
-    text_y += text_step;
-  }
-  SETTINGS st;
-  EEPROM.get(0, st); // читаємо налаштування WiFi в пам'яті
-  Serial.println("read settings from EEPROM");
-  if(st.myName==settings.myName){ // якщо ім'я збігаеться то нічого не робимо
-    Serial.println("settings WiFi valid");
-    memcpy(&settings, &st, sizeof(settings)); 
-  }else{                          // якщо ні, то пишимо в пам'ять нові налаштування
-    Serial.println("settings Wifi invalid");
-    Serial.println("write settings to EEPROM");
-    tft.drawString("Settings Wifi - invalid", 0, text_y);
-    text_y += text_step;
-    tft.drawString("Write settings to EEPROM", 0, text_y);
-    text_y += text_step;
-    EEPROM.put(0, settings);
-    EEPROM.commit();
-  }
-}
+
 void setup_SPIFFS(){
   if(!SPIFFS.begin()){
     Serial.println("Formating file system");
@@ -529,9 +758,10 @@ void setup_SPIFFS(){
   tft.drawString(mess, 0, text_y);
   text_y += text_step;
   spiffsDir(str_var); // 
-  Serial.println(str_var);
+  //Serial.println("str_var1: " + str_var);
   str_var = spiffsFileName();
-  if(!SPIFFS.exists(str_var)){
+  //Serial.println("str_var2: " + str_var);
+  if(!SPIFFS.exists(str_var)){ // Перевіряє чи є файл з новим ім'ям - якщо ні то створює його
     File f = SPIFFS.open(str_var, FILE_APPEND);
     f.close();
   }
@@ -543,11 +773,11 @@ void setup_createAP(){
     Serial.println(myIP);
 }
 void setup_WIFI(){
-    String mess = "SSID: " + String(settings.ssid) + ", PASS: " +  String(settings.password);
+    String mess = "SSID: " + String(set_fs.ssid) + ", PASS: " +  String(set_fs.pass);
     Serial.println(mess);
     tft.drawString(mess, 0, text_y);
     text_y += text_step;
-    WiFi.begin(settings.ssid, settings.password);             // Connect to the network
+    //WiFi.begin(set_fs.ssid.c_chr(), set_fs.pass);             // Connect to the network
     uint8_t tryCount=10;
     while(tryCount-- > 0 && !WiFi.isConnected()) { // Wait for the Wi-Fi to connect
       delay(500);
@@ -563,7 +793,7 @@ void setup_WIFI(){
       tft.drawString("IP address: " + WiFi.localIP().toString(), 0, text_y);
       text_y += text_step;
     }else{
-      Serial.println("Can't connect to "+String(settings.ssid));  
+      Serial.println("Can't connect to "+String(set_fs.ssid));  
       WiFi.disconnect();
       setup_createAP();
       tft.drawString("IP_AP: " + WiFi.softAPIP().toString(), 0, text_y);
@@ -574,21 +804,21 @@ void setup_WIFI(){
 void setup_ADC(){
   analogSetWidth(12);
   analogSetAttenuation(ADC_11db);
-  adcAttachPin(pin_ADC0);
-  adcAttachPin(pin_ADC1);
-  adcAttachPin(pin_ADC2);
-  adcAttachPin(pin_ADC3);
-  analogSetPinAttenuation(pin_ADC0, ADC_11db);
-  analogSetPinAttenuation(pin_ADC1, ADC_11db);
-  analogSetPinAttenuation(pin_ADC2, ADC_11db);
-  analogSetPinAttenuation(pin_ADC3, ADC_11db);
+  adcAttachPin(set_fs.pin_ADC0);
+  adcAttachPin(set_fs.pin_ADC1);
+  adcAttachPin(set_fs.pin_ADC2);
+  adcAttachPin(set_fs.pin_ADC3);
+  analogSetPinAttenuation(set_fs.pin_ADC0, ADC_11db);
+  analogSetPinAttenuation(set_fs.pin_ADC1, ADC_11db);
+  analogSetPinAttenuation(set_fs.pin_ADC2, ADC_11db);
+  analogSetPinAttenuation(set_fs.pin_ADC3, ADC_11db);
   for(uint8_t  i = 0; i < 100; i++){
-    analogRead(pin_ADC0);
-    analogRead(pin_ADC1);
-    analogRead(pin_ADC2);
-    analogRead(pin_ADC3);
+    analogRead(set_fs.pin_ADC0);
+    analogRead(set_fs.pin_ADC1);
+    analogRead(set_fs.pin_ADC2);
+    analogRead(set_fs.pin_ADC3);
   }
-  randomSeed(analogRead(pin_ADC0));
+  randomSeed(analogRead(set_fs.pin_ADC0));
 }
 void setup_tasks(){
   // Create semaphore to inform us when the timer has fired
@@ -616,9 +846,10 @@ void setup(void) {
   while(!Serial && (millis() <= 1000));
   setup_TFT();
   setup_PIN();
-  //setup_EEPROM();
   setup_SPIFFS();
   touch_calibrate(); // Calibrate the touch screen and retrieve the scaling factors
+  //saveSpiffs();
+  loadSpiffs();
   //setup_WIFI();
   setup_ADC();
   setup_tasks();
@@ -626,8 +857,62 @@ void setup(void) {
   Serial.println("Setup done");
   delay(1000);
   first_start();
+  //doCmd(commad, arg);
 }
 #pragma endregion setup
+
+
+#pragma region ADC calc send and log
+//void toSocketAdcData(){
+//    if( socket.connectedClients() > 0 ){ 
+//        s="";
+//        for( uint8_t i=0; i<ARRAY_SIZE( adcDataSafe ); i++ ){
+//            char str[16];
+//            sprintf( str, "%03x%03x%03x%03x", adcDataSafe[i][0], adcDataSafe[i][1], adcDataSafe[i][2], adcDataSafe[i][3] );
+//            s+=str;
+//        }
+//        socket.broadcastTXT(resultOf+"ADC\n"+s);
+//    }
+//}    
+void logWrite(bool flush = false){
+  if(flush || logAccumCounter >= LOG_ACCUM_COUNTER){
+    if(logAccumCounter){
+      for(int i=0; i < logAccumCounter; i++){
+        logAccum[i] /= MIN(logAccumCounter, LOG_ACCUM_COUNTER);
+      }
+      char toLogData[64]; 
+      //sprintf(toLogData, "%d|%04x%04x%04x%04x\n", secondsCounter, 
+      //                                            (uint16_t)(1000*adcToVolts(0, (uint16_t)logAccum[0] )), 
+      //                                            (uint16_t)(1000*adcToVolts(1, (uint16_t)logAccum[1] )), 
+      //                                            (uint16_t)(1000*adcToVolts(2, (uint16_t)logAccum[2] )), 
+      //                                            (uint16_t)(1000*adcToVolts(3, (uint16_t)logAccum[3] )));
+      logString += toLogData;
+    }
+    logAccumCounter = 0;
+    if(flush || logString.length() > LOG_STRING_MAX_SIZE){
+      while(adcDataIndex < ARRAY_SIZE(adcData)) delay(1); // ждём пока ADC свои дела поделает
+      String siffsFN = spiffsFileName();
+      File log = SPIFFS.open(siffsFN, FILE_APPEND);
+      log.print(logString);
+      log.close();
+      logString.remove(0);
+      //spiffsFileName2Lcd(siffsFN);
+      //digitalWrite( PIN_LED, !digitalRead(PIN_LED) );
+    }
+    memset(logAccum, 0, sizeof(logAccum));
+  }else{
+    logAccumCounter++;
+    for(int i = 0; i < ARRAY_SIZE(logAccum); i++){
+      float sum = 0;
+      for(int j=0; j < ARRAY_SIZE(adcDataSafe); j++){
+        sum += adcDataSafe[j][i];
+      }
+      logAccum[i] += sum / ARRAY_SIZE(adcDataSafe);
+    }
+  }
+}
+#pragma endregion ADC calc send and log
+
 
 
 void view_test(){
@@ -636,7 +921,7 @@ void view_test(){
   tft.setTextDatum(TR_DATUM);
   tft.setTextSize(2);
   for(uint8_t i = 0; i < 4; i++){
-    if(adcDataVol[i] == vol_start[i]){
+    if(adcDataVol[i] == set_fs.vol_start[i]){
       tft.drawString(("NoBatt"), VOL_X + (DISP_I + DISP_WB) * i, VOL_Y);
     } else {
       tft.drawString((String(adcDataVol[i]) + " V"), VOL_X + (DISP_I + DISP_WB) * i, VOL_Y);
@@ -682,7 +967,7 @@ void view_test(){
             test_start_vol[b] = adcDataVol[b];
             test_opir[b] = 0;
           }
-          digitalWrite(pin_rele[b], HIGH);
+          digitalWrite(set_fs.pin_rele[b], HIGH);
           keyColor_test[b] = TFT_RED;
           key_test[b].initButton(&tft, KEY_XB + b * (KEY_WB + KEY_SPACING_XB),
                                        KEY_YB,
@@ -709,7 +994,7 @@ void view_test(){
       }
       if(b > 3 && b < 8){  // ЯКЩО НАТИСНУТА КНОПКА PAUSE
         if(test_stat[b - 4] == 1){
-          digitalWrite(pin_rele[b - 4], LOW);
+          digitalWrite(set_fs.pin_rele[b - 4], LOW);
           keyColor_test[b - 4] = TFT_DARKGREY;
           key_test[b - 4].initButton(&tft, KEY_XB + (b - 4) * (KEY_WB + KEY_SPACING_XB),
                                            KEY_YB,
@@ -729,7 +1014,7 @@ void view_test(){
       }
       if(b > 7 && b < 12){ //ЯКЩО НАТИСНУТА КНОПКА RESET
         if(test_stat[b - 8] > 0){
-          digitalWrite(pin_rele[b - 8], LOW);
+          digitalWrite(set_fs.pin_rele[b - 8], LOW);
           if(test_stat[b - 8] == 2){
             keyColor_test[b - 4] = TFT_DARKGREY;
             key_test[b - 4].initButton(&tft, KEY_XB + (b - 8) * (KEY_WB + KEY_SPACING_XB),
@@ -777,11 +1062,11 @@ void setup_vol(){
     tft.drawString(mes[setup_num], 240, 20);
     tft.setTextDatum(TR_DATUM);
     for(uint8_t i = 0; i < 4; i++){
-      vol_settings_old[i] = vol_settings[i] = (vol_min[i] * (setup_num ==0 ))
-                                            + (vol_max[i] * (setup_num ==1 ))
-                                            + (vol_start[i]*(setup_num ==2 ))
-                                            + (vol_opor[i] *(setup_num ==3 ))
-                                            + (rezist[i] *  (setup_num ==4 ));
+      vol_settings_old[i] = vol_settings[i] = (set_fs.vol_min[i] * (setup_num == 0))
+                                            + (set_fs.vol_max[i] * (setup_num == 1))
+                                            + (set_fs.vol_start[i]*(setup_num == 2))
+                                            + (set_fs.vol_opor[i] *(setup_num == 3))
+                                            + (set_fs.rezist[i] *  (setup_num == 4));
       if(setup_num != 4) tft.drawString(("  " + String(vol_settings[i]) + " V"), VOL_X + (DISP_I + DISP_WB) * i, VOL_YI);
       else tft.drawString(("  " + String(vol_settings[i]) + " R"), VOL_X + (DISP_I + DISP_WB) * i, VOL_YI);
     }
@@ -800,8 +1085,8 @@ void setup_vol(){
       if(setup_num != 4){
         tft.drawString((String(adcDataVol[i]) + " V"), VOL_X + (DISP_I + DISP_WB) * i, VOL_Y);
       } else {
-        digitalWrite(pin_rele[i], HIGH);
-        tft.drawString((String(adcDataVol[i]/rezist[i]) + " A"), VOL_X + (DISP_I + DISP_WB) * i, VOL_Y);
+        digitalWrite(set_fs.pin_rele[i], HIGH);
+        tft.drawString((String(adcDataVol[i]/set_fs.rezist[i]) + " A"), VOL_X + (DISP_I + DISP_WB) * i, VOL_Y);
         tft.setTextColor(TFT_RED, TFT_BLACK);
         tft.drawString(("Rele-ON!"), VOL_X + (DISP_I + DISP_WB) * i, VOL_YW);
       }
@@ -834,20 +1119,23 @@ void setup_vol(){
         else tft.drawString(("  " + String(vol_settings[b - 8]) + " R"), VOL_X + (DISP_I + DISP_WB) * (b - 8), VOL_YI);
         switch(setup_num){
           case 0:
-            vol_min[b - 8] = vol_settings[b - 8]; break;
+            set_fs.vol_min[b - 8] = vol_settings[b - 8]; break;
           case 1:
-            vol_max[b - 8] = vol_settings[b - 8]; break;
+            set_fs.vol_max[b - 8] = vol_settings[b - 8]; break;
           case 2:
-            vol_start[b - 8] = vol_settings[b - 8]; break;
+            set_fs.vol_start[b - 8] = vol_settings[b - 8]; break;
           case 3:
-            vol_opor[b - 8] = vol_settings[b - 8]; break;
+            set_fs.vol_opor[b - 8] = vol_settings[b - 8]; break;
           case 4:
-            rezist[b - 8] = vol_settings[b - 8]; break;
+            set_fs.rezist[b - 8] = vol_settings[b - 8]; break;
         }
+        update_ffs = 1;  // були зміни в налаштуванні - треба записати їх в пам'ять
       }
       if(b == 12){
         switch(setup_num){
         case 0:
+          if(update_ffs) loadSpiffs();
+          update_ffs = 0;
           disp_stat = 0;
           first_start();
           break;
@@ -860,7 +1148,7 @@ void setup_vol(){
         case 4:
           setup_num = 3;
           for(uint8_t i = 0; i < 4; i++){
-            digitalWrite(pin_rele[i], LOW);
+            digitalWrite(set_fs.pin_rele[i], LOW);
           }
           break;
         default:
@@ -879,8 +1167,10 @@ void setup_vol(){
           setup_num = 4; break;
         case 4:
           for(uint8_t i = 0; i < 4; i++){
-            digitalWrite(pin_rele[i], LOW);
+            digitalWrite(set_fs.pin_rele[i], LOW);
           }
+          if(update_ffs) saveSpiffs();
+          update_ffs = 0;
           disp_stat = 0;
           first_start();  
           break;
@@ -941,10 +1231,10 @@ void loop() {
     portEXIT_CRITICAL(&timerMux);
 
     for(uint8_t i = 0; i < 4; i++){
-      adcDataVol[i] = float(adcDataSafe[0][i]) * vol_opor[i] / 4095 + vol_start[i];
-      if(adcDataVol[i] < vol_min[i] && test_stat[i] == 1){ // Кінець тесту по розряду аккумулятора
+      adcDataVol[i] = float(adcDataSafe[0][i]) * set_fs.vol_opor[i] / 4095 + set_fs.vol_start[i];
+      if(adcDataVol[i] < set_fs.vol_min[i] && test_stat[i] == 1){ // Кінець тесту по розряду аккумулятора
         test_stat[i] = 3;
-        digitalWrite(pin_rele[i], LOW);
+        digitalWrite(set_fs.pin_rele[i], LOW);
         keyColor_test[i] = TFT_BLUE;
         key_test[i].initButton(&tft, KEY_XB + i * (KEY_WB + KEY_SPACING_XB),
                                      KEY_YB,
@@ -955,7 +1245,7 @@ void loop() {
       }
       test_amperage[i] = 0;
       if(test_stat[i] == 1){ // Розрахунок параметрів аккумулятора
-        test_amperage[i] = adcDataVol[i] / rezist[i];     // Розрахунок струму розряду батареї №1
+        test_amperage[i] = adcDataVol[i] / set_fs.rezist[i];     // Розрахунок струму розряду батареї №1
         test_cap[i] += test_amperage[i] * (millis() - test_prevMillis[i]) / 3600; // Розрахунок емности батареї №1 в мА/годину
         test_pow[i] += test_amperage[i] * (millis() - test_prevMillis[i]) / 1000 * adcDataVol[i] / 3600;  // Розрахунок емности батареї №1 в Вт/годину
         if(test_opir[i] == 0 && test_time[i] > 2) test_opir[i] = (test_start_vol[i] - adcDataVol[i]) / test_amperage[i];
