@@ -40,3 +40,4 @@
 Для реалізації цієї функції потрібно виконати схему з додатковими реле.
 
 ![Иллюстрация к проекту](https://github.com/IZ76/Test-Battery/blob/main/IMG_20221102_142021.jpg)
+![Иллюстрация к проекту](https://github.com/IZ76/Test-Battery/blob/main/IZ76_Test_Battery_v05.jpg)
